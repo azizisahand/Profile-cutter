@@ -119,7 +119,7 @@ def build_cutting_chart(solution: Solution, kerf: int) -> go.Figure:
         label = f"Bar {bar_idx + 1} ({fmt(stock_len)} mm)"
         x_offset = 0
 
-        for piece_len in pieces:
+        for piece_idx, piece_len in enumerate(pieces):
             show_legend = piece_len not in legend_added
             if show_legend:
                 legend_added.add(piece_len)
@@ -143,7 +143,7 @@ def build_cutting_chart(solution: Solution, kerf: int) -> go.Figure:
             x_offset += piece_len
 
             # Draw kerf gap as a thin dark segment
-            if kerf > 0 and piece_len != pieces[-1]:
+            if kerf > 0 and piece_idx < len(pieces) - 1:
                 fig.add_trace(
                     go.Bar(
                         name="Kerf",
@@ -197,21 +197,145 @@ def build_cutting_chart(solution: Solution, kerf: int) -> go.Figure:
 # CSV export
 # ---------------------------------------------------------------------------
 
-def solution_to_csv(solution: Solution) -> str:
-    rows = []
+def solution_to_excel(solution: Solution, input_pieces: list[tuple[int, int]]) -> bytes:
+    """
+    Build an Excel workbook with three sections on one sheet:
+
+    Section 1 — Input Materials
+        Length (mm) | Quantity | Total Length (mm)
+
+    [4 empty rows gap]
+
+    Section 2 — Cutting List
+        Bar | Stock Length (mm) | Pieces (mm) | Piece Count | Waste (mm) | Utilization (%)
+
+    [4 empty rows gap]
+
+    Section 3 — List of Order
+        Qty to Order | Stock Length (mm)
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cutting Plan"
+
+    # ── Style helpers ──────────────────────────────────────────────────────
+    header_font   = Font(bold=True, color="FFFFFF", size=11)
+    header_fill_0 = PatternFill("solid", fgColor="375623")   # dark green
+    header_fill_1 = PatternFill("solid", fgColor="1F4E79")   # dark blue
+    header_fill_2 = PatternFill("solid", fgColor="833333")   # dark red
+    section_font  = Font(bold=True, size=13)
+    thin_side     = Side(style="thin", color="BBBBBB")
+    thin_border   = Border(left=thin_side, right=thin_side,
+                           top=thin_side, bottom=thin_side)
+    center        = Alignment(horizontal="center", vertical="center")
+
+    def style_header_row(row, col_start, col_end, fill):
+        for c in range(col_start, col_end + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.font      = header_font
+            cell.fill      = fill
+            cell.alignment = center
+            cell.border    = thin_border
+
+    def style_data_row(row, col_start, col_end, shade=False):
+        bg = PatternFill("solid", fgColor="EAF0F8") if shade else PatternFill("solid", fgColor="FFFFFF")
+        for c in range(col_start, col_end + 1):
+            cell = ws.cell(row=row, column=c)
+            cell.fill      = bg
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border    = thin_border
+
+    row = 1
+
+    # ── Section 1: Input Materials ─────────────────────────────────────────
+    ws.cell(row=row, column=1, value="Input Materials").font = section_font
+    row += 1
+
+    inp_headers = ["Length (mm)", "Quantity", "Total Length (mm)"]
+    for c, h in enumerate(inp_headers, 1):
+        ws.cell(row=row, column=c, value=h)
+    style_header_row(row, 1, len(inp_headers), header_fill_0)
+    row += 1
+
+    sorted_pieces = sorted(input_pieces, key=lambda x: x[0])
+    for shade_idx, (length, qty) in enumerate(sorted_pieces, 1):
+        ws.cell(row=row, column=1, value=length)
+        ws.cell(row=row, column=2, value=qty)
+        ws.cell(row=row, column=3, value=length * qty)
+        style_data_row(row, 1, len(inp_headers), shade=(shade_idx % 2 == 0))
+        row += 1
+
+    # Totals row
+    total_qty = sum(q for _, q in input_pieces)
+    total_len = sum(l * q for l, q in input_pieces)
+    totals_font = Font(bold=True)
+    ws.cell(row=row, column=1, value="Total").font = totals_font
+    ws.cell(row=row, column=2, value=total_qty).font = totals_font
+    ws.cell(row=row, column=3, value=total_len).font = totals_font
+    style_data_row(row, 1, len(inp_headers))
+    for c in range(1, len(inp_headers) + 1):
+        ws.cell(row=row, column=c).font = totals_font
+    row += 1
+
+    # ── Gap ────────────────────────────────────────────────────────────────
+    row += 4
+
+    # ── Section 2: Cutting List ────────────────────────────────────────────
+    ws.cell(row=row, column=1, value="Cutting List").font = section_font
+    row += 1
+
+    cut_headers = ["Bar", "Stock Length (mm)", "Pieces (mm)",
+                   "Piece Count", "Waste (mm)", "Utilization (%)"]
+    for c, h in enumerate(cut_headers, 1):
+        ws.cell(row=row, column=c, value=h)
+    style_header_row(row, 1, len(cut_headers), header_fill_1)
+    row += 1
+
     for bar_idx, (stock_len, pieces) in enumerate(solution.cutting_plan, 1):
-        pieces_str = " | ".join(str(p) for p in pieces)
-        waste = stock_len - sum(pieces)
-        rows.append({
-            "Bar": bar_idx,
-            "Stock Length (mm)": stock_len,
-            "Pieces (mm)": pieces_str,
-            "Waste (mm)": waste,
-            "Utilization (%)": round(sum(pieces) / stock_len * 100, 1),
-        })
-    summary = pd.DataFrame(rows)
-    buf = io.StringIO()
-    summary.to_csv(buf, index=False)
+        used       = sum(pieces)
+        waste      = stock_len - used
+        util       = round(used / stock_len * 100, 1)
+        pieces_str = " | ".join(str(p) for p in sorted(pieces, reverse=True))
+        values = [bar_idx, stock_len, pieces_str, len(pieces), waste, util]
+        for c, v in enumerate(values, 1):
+            ws.cell(row=row, column=c, value=v)
+        style_data_row(row, 1, len(cut_headers), shade=(bar_idx % 2 == 0))
+        row += 1
+
+    # ── Gap ────────────────────────────────────────────────────────────────
+    row += 4
+
+    # ── Section 3: List of Order ───────────────────────────────────────────
+    ws.cell(row=row, column=1, value="List of Order").font = section_font
+    row += 1
+
+    ord_headers = ["Qty to Order", "Stock Length (mm)"]
+    for c, h in enumerate(ord_headers, 1):
+        ws.cell(row=row, column=c, value=h)
+    style_header_row(row, 1, len(ord_headers), header_fill_2)
+    row += 1
+
+    order: dict[int, int] = {}
+    for stock_len, _ in solution.cutting_plan:
+        order[stock_len] = order.get(stock_len, 0) + 1
+
+    for shade_idx, (stock_len, qty) in enumerate(sorted(order.items()), 1):
+        ws.cell(row=row, column=1, value=qty)
+        ws.cell(row=row, column=2, value=stock_len)
+        style_data_row(row, 1, 2, shade=(shade_idx % 2 == 0))
+        row += 1
+
+    # ── Column widths ──────────────────────────────────────────────────────
+    col_widths = [6, 20, 48, 13, 13, 16]
+    for i, w in enumerate(col_widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
     return buf.getvalue()
 
 
@@ -271,12 +395,13 @@ def show_detail_view(solution: Solution, kerf: int, key_prefix: str = ""):
     fig = build_cutting_chart(solution, kerf)
     st.plotly_chart(fig, use_container_width=True)
 
-    csv_data = solution_to_csv(solution)
+    input_pieces = df_to_pieces(st.session_state.pieces_df)
+    excel_data = solution_to_excel(solution, input_pieces)
     st.download_button(
-        label="⬇ Download cutting plan as CSV",
-        data=csv_data,
-        file_name="cutting_plan.csv",
-        mime="text/csv",
+        label="⬇ Download cutting plan as Excel",
+        data=excel_data,
+        file_name="cutting_plan.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"{key_prefix}_dl",
     )
 
@@ -291,6 +416,55 @@ st.markdown(
     "the optimizer finds the stock length(s) to order that minimize "
     "material waste while keeping your SKU count low."
 )
+
+st.markdown("""
+<style>
+  .marquee-bg-wrapper {
+    position: fixed;
+    top: 50%;
+    left: 0;
+    width: 100%;
+    overflow: hidden;
+    transform: translateY(-50%);
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.055;
+  }
+  .marquee-bg-track {
+    display: flex;
+    width: max-content;
+    animation: marquee-scroll 30s linear infinite;
+  }
+  @keyframes marquee-scroll {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+  }
+  .marquee-bg-item {
+    font-size: 80px;
+    font-weight: 900;
+    text-transform: uppercase;
+    white-space: nowrap;
+    padding-right: 60px;
+    font-family: Arial Black, sans-serif;
+    color: #111;
+  }
+  .marquee-bg-item span {
+    color: #e30613;
+  }
+</style>
+<div class="marquee-bg-wrapper">
+  <div class="marquee-bg-track">
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+    <div class="marquee-bg-item">Work on <span>Progress</span> &nbsp;•&nbsp; </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 st.divider()
 
@@ -509,45 +683,51 @@ else:
     st.caption(f"Solved in {solve_time:.1f} s")
 
     if run_mode == "auto" and len(solutions) > 1:
-        # Show result cards for all k, then detail for selected
-        st.subheader("Options")
-        card_cols = st.columns(len(solutions))
-        selected_idx = st.session_state.get("selected_k", 0)
-
-        for idx, (col, sol) in enumerate(zip(card_cols, solutions)):
-            with col:
-                is_recommended = idx == 0  # first = best score after sorting
-                is_selected = idx == selected_idx
-                border_color = "#4C78A8" if is_selected else "#E0E0E0"
-                tag = " ⭐ Recommended" if is_recommended else ""
-
-                # Use a styled container
-                with st.container(border=True):
-                    st.markdown(
-                        f"**k = {sol.distinct_count}{tag}**"
-                    )
-                    st.metric("Utilization", f"{sol.utilization_pct:.1f}%")
-                    st.metric("Distinct SKUs", sol.distinct_count)
-                    st.metric("Total bars", sum(sol.bar_counts))
-                    st.metric("Waste", f"{fmt(sol.total_waste_mm)} mm")
-                    lengths_str = ", ".join(f"{fmt(l)} mm" for l in sol.stock_lengths)
-                    st.caption(f"Stock: {lengths_str}")
-                    if st.button(
-                        "View details" if not is_selected else "Showing details",
-                        key=f"card_btn_{idx}",
-                        disabled=is_selected,
-                        use_container_width=True,
-                    ):
-                        st.session_state.selected_k = idx
-                        st.rerun()
-
-        st.divider()
-        selected_sol = solutions[selected_idx]
+        # Show recommended result directly
+        recommended = solutions[0]
+        lengths_str = ", ".join(f"{fmt(l)} mm" for l in recommended.stock_lengths)
         st.subheader(
-            f"Detailed view — k = {selected_sol.distinct_count}  "
-            f"({', '.join(f'{fmt(l)} mm' for l in selected_sol.stock_lengths)})"
+            f"Recommended — Stock: {lengths_str}  —  "
+            f"Utilization: {recommended.utilization_pct:.1f}%"
         )
-        show_detail_view(selected_sol, int(kerf), key_prefix=f"detail_{selected_idx}")
+        show_detail_view(recommended, int(kerf), key_prefix="auto_rec")
+
+        # Comparison cards in a collapsible expander
+        with st.expander("Compare k=1 / k=2 / k=3 options"):
+            selected_idx = st.session_state.get("selected_k", 0)
+            card_cols = st.columns(len(solutions))
+
+            for idx, (col, sol) in enumerate(zip(card_cols, solutions)):
+                with col:
+                    is_recommended = idx == 0
+                    is_selected = idx == selected_idx
+                    tag = " ⭐ Recommended" if is_recommended else ""
+                    with st.container(border=True):
+                        st.markdown(f"**k = {sol.distinct_count}{tag}**")
+                        st.metric("Utilization", f"{sol.utilization_pct:.1f}%")
+                        st.metric("Distinct SKUs", sol.distinct_count)
+                        st.metric("Total bars", sum(sol.bar_counts))
+                        st.metric("Waste", f"{fmt(sol.total_waste_mm)} mm")
+                        lengths_str_c = ", ".join(f"{fmt(l)} mm" for l in sol.stock_lengths)
+                        st.caption(f"Stock: {lengths_str_c}")
+                        if st.button(
+                            "View details" if not is_selected else "Showing details",
+                            key=f"card_btn_{idx}",
+                            disabled=is_selected,
+                            use_container_width=True,
+                        ):
+                            st.session_state.selected_k = idx
+                            st.rerun()
+
+            if selected_idx != 0:
+                st.divider()
+                selected_sol = solutions[selected_idx]
+                lengths_str_s = ", ".join(f"{fmt(l)} mm" for l in selected_sol.stock_lengths)
+                st.subheader(
+                    f"k = {selected_sol.distinct_count}  —  Stock: {lengths_str_s}  —  "
+                    f"Utilization: {selected_sol.utilization_pct:.1f}%"
+                )
+                show_detail_view(selected_sol, int(kerf), key_prefix=f"detail_{selected_idx}")
 
     else:
         # Single solution
