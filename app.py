@@ -508,19 +508,33 @@ with st.form("quick_add_form", clear_on_submit=True):
                 ).astype({"Length (mm)": int, "Quantity": int})
             st.session_state.just_added = True
 
-# Refocus the Length input after a successful add
+# Refocus the Length input after a successful add.
+# Streamlit restores focus to the last active element after its own rerender,
+# so we retry a few times to win that race.
 if st.session_state.just_added:
     st.session_state.just_added = False
-    st.components.v1.html("""
+    # Unique token forces Streamlit to remount the iframe every time,
+    # so the script actually re-executes on each add.
+    _ts = time.monotonic()
+    st.components.v1.html(f"""
     <script>
-        setTimeout(function() {
+        /* {_ts} */
+        function focusLength(attemptsLeft) {{
             var inputs = window.parent.document.querySelectorAll(
                 '[data-testid="stTextInput"] input'
             );
-            if (inputs.length > 0) inputs[0].focus();
-        }, 120);
+            if (inputs.length > 0) {{
+                inputs[0].focus();
+                if (attemptsLeft > 0) {{
+                    setTimeout(function() {{ focusLength(attemptsLeft - 1); }}, 120);
+                }}
+            }} else if (attemptsLeft > 0) {{
+                setTimeout(function() {{ focusLength(attemptsLeft - 1); }}, 80);
+            }}
+        }}
+        focusLength(4);
     </script>
-    """, height=0)
+    """, height=1)
 
 btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 5])
 with btn_col1:
