@@ -32,11 +32,8 @@ if "pieces_df" not in st.session_state:
         columns=["Length (mm)", "Quantity"]
     ).astype({"Length (mm)": int, "Quantity": int})
 
-if "quick_length" not in st.session_state:
-    st.session_state.quick_length = 1000
-
-if "quick_qty" not in st.session_state:
-    st.session_state.quick_qty = 1
+if "just_added" not in st.session_state:
+    st.session_state.just_added = False
 
 if "selected_k" not in st.session_state:
     st.session_state.selected_k = None  # index into solutions list for detail view
@@ -475,32 +472,55 @@ st.divider()
 # ---------------------------------------------------------------------------
 st.header(t["section_pieces"])
 
-col_qa, col_qb, col_qc = st.columns([2, 2, 1])
-with col_qa:
-    q_len = st.number_input(
-        t["col_length"], min_value=1, max_value=7500,
-        value=st.session_state.quick_length, step=10, key="qi_length",
-    )
-with col_qb:
-    q_qty = st.number_input(
-        t["col_qty"], min_value=1, max_value=500,
-        value=st.session_state.quick_qty, step=1, key="qi_qty",
-    )
-with col_qc:
-    st.write("")
-    st.write("")
-    if st.button(t["btn_add"], use_container_width=True):
-        new_row = pd.DataFrame([{"Length (mm)": int(q_len), "Quantity": int(q_qty)}])
-        existing = st.session_state.pieces_df
-        match = existing["Length (mm)"] == int(q_len)
-        if match.any():
-            existing.loc[match, "Quantity"] += int(q_qty)
-            st.session_state.pieces_df = existing.reset_index(drop=True)
-        else:
-            st.session_state.pieces_df = pd.concat(
-                [existing, new_row], ignore_index=True
-            ).astype({"Length (mm)": int, "Quantity": int})
-        st.rerun()
+with st.form("quick_add_form", clear_on_submit=True):
+    col_qa, col_qb, col_qc = st.columns([2, 2, 1])
+    with col_qa:
+        q_len_raw = st.text_input(
+            t["col_length"], value="", placeholder="e.g. 1200", key="qi_length"
+        )
+    with col_qb:
+        q_qty_raw = st.text_input(
+            t["col_qty"], value="", placeholder="1", key="qi_qty"
+        )
+    with col_qc:
+        st.write("")
+        st.write("")
+        submitted = st.form_submit_button(t["btn_add"], use_container_width=True)
+
+    if submitted:
+        try:
+            q_len = int(q_len_raw.strip()) if q_len_raw.strip() else None
+            q_qty = int(q_qty_raw.strip()) if q_qty_raw.strip() else 1
+        except ValueError:
+            q_len, q_qty = None, 1
+
+        if q_len and q_len > 0:
+            q_qty = max(q_qty, 1)
+            existing = st.session_state.pieces_df
+            match = existing["Length (mm)"] == q_len
+            if match.any():
+                existing.loc[match, "Quantity"] += q_qty
+                st.session_state.pieces_df = existing.reset_index(drop=True)
+            else:
+                st.session_state.pieces_df = pd.concat(
+                    [existing, pd.DataFrame([{"Length (mm)": q_len, "Quantity": q_qty}])],
+                    ignore_index=True,
+                ).astype({"Length (mm)": int, "Quantity": int})
+            st.session_state.just_added = True
+
+# Refocus the Length input after a successful add
+if st.session_state.just_added:
+    st.session_state.just_added = False
+    st.components.v1.html("""
+    <script>
+        setTimeout(function() {
+            var inputs = window.parent.document.querySelectorAll(
+                '[data-testid="stTextInput"] input'
+            );
+            if (inputs.length > 0) inputs[0].focus();
+        }, 120);
+    </script>
+    """, height=0)
 
 btn_col1, btn_col2, btn_col3 = st.columns([1, 2, 5])
 with btn_col1:
