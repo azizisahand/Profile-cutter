@@ -737,3 +737,30 @@ else:
         st.session_state.solutions = []
         st.session_state.selected_k = None
         st.rerun()
+
+# ---------------------------------------------------------------------------
+# Footer
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+  .footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    text-align: center;
+    padding: 6px 0;
+    font-size: 12px;
+    color: #aaaaaa;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+  .footer span {
+    color: #e30613;
+    font-weight: 600;
+  }
+</style>
+<div class="footer">
+  crafted with care by <span>Sahand</span>
+</div>
+""", unsafe_allow_html=True)
